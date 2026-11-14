@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
@@ -30,6 +31,8 @@ public class MareService {
      * de influência da maré.
      */
     private static final int RAIO_COSTA_METROS = 10_000;
+    private static final int CONNECT_TIMEOUT_MS = 4_000;
+    private static final int READ_TIMEOUT_MS = 15_000;
     private static final String OVERPASS_USER_AGENT =
             "MAIA-Teste/1.0 (https://github.com/thainascimento/projeto-maia-teste)";
 
@@ -59,16 +62,25 @@ public class MareService {
                                 "https://overpass-api.de"
                         )
                         .defaultHeader(HttpHeaders.USER_AGENT, OVERPASS_USER_AGENT)
+                        .requestFactory(criarRequestFactoryComTimeout())
                         .build();
 
         this.overpassAlternativoClient =
                 RestClient.builder()
                         .baseUrl("https://overpass.private.coffee")
                         .defaultHeader(HttpHeaders.USER_AGENT, OVERPASS_USER_AGENT)
+                        .requestFactory(criarRequestFactoryComTimeout())
                         .build();
 
         this.objectMapper =
                 objectMapper;
+    }
+
+    private static SimpleClientHttpRequestFactory criarRequestFactoryComTimeout() {
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(CONNECT_TIMEOUT_MS);
+        factory.setReadTimeout(READ_TIMEOUT_MS);
+        return factory;
     }
 
     public MareResponse buscarMare(
