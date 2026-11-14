@@ -1,11 +1,14 @@
 package com.maia.backend.mare;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
@@ -29,6 +32,7 @@ public class MareService {
 
     private final RestClient worldTidesClient;
     private final RestClient overpassClient;
+    private final RestClient overpassAlternativoClient;
 
     private final ObjectMapper objectMapper;
 
@@ -53,6 +57,11 @@ public class MareService {
                         )
                         .build();
 
+        this.overpassAlternativoClient =
+                RestClient.builder()
+                        .baseUrl("https://overpass.private.coffee")
+                        .build();
+
         this.objectMapper =
                 objectMapper;
     }
@@ -72,25 +81,27 @@ public class MareService {
          * porque ela pode gerar previsões mesmo para
          * coordenadas interiores.
          */
-        boolean costaProxima =
+        Boolean costaProxima =
                 possuiCostaProxima(
                         latitude,
                         longitude
                 );
 
-        if (!costaProxima) {
+        if (!Boolean.TRUE.equals(costaProxima)) {
 
-            System.out.println(
-                    "Maré não aplicável ao destino: "
-                            + latitude
-                            + ", "
-                            + longitude
-                            + ". Nenhuma linha costeira encontrada "
-                            + "em até "
-                            + (RAIO_COSTA_METROS / 1000)
-                            + " km."
-            );
-
+            if (costaProxima == null) {
+                System.out.println(
+                        "Maré indisponível temporariamente: não foi possível "
+                                + "verificar a proximidade com a costa nas duas instâncias Overpass."
+                );
+            } else {
+                System.out.println(
+                        "Maré não aplicável ao destino: "
+                                + latitude + ", " + longitude
+                                + ". Nenhuma linha costeira encontrada em até "
+                                + (RAIO_COSTA_METROS / 1000) + " km."
+                );
+            }
             return MareResponse.indisponivel();
         }
 
@@ -389,116 +400,55 @@ public class MareService {
      * dentro de um raio de 10 km da coordenada
      * da viagem.
      */
-    private boolean possuiCostaProxima(
-            double latitude,
-            double longitude
-    ) {
-
+    /**
+     * TRUE: costa confirmada; FALSE: consulta válida sem costa;
+     * null: ambas as instâncias falharam (não equivale a ausência de costa).
+     */
+    private Boolean possuiCostaProxima(double latitude, double longitude) {
         String consulta =
                 "[out:json][timeout:12];"
                         + "way[\"natural\"=\"coastline\"]"
-                        + "(around:"
-                        + RAIO_COSTA_METROS
-                        + ","
-                        + latitude
-                        + ","
-                        + longitude
-                        + ");"
+                        + "(around:" + RAIO_COSTA_METROS + "," + latitude + "," + longitude + ");"
                         + "out ids 1;";
 
+        Boolean resultado = consultarCosta(overpassClient, "principal", consulta);
+        if (resultado != null) {
+            return resultado;
+        }
+
+        System.out.println("Tentando validação costeira na Overpass alternativa...");
+        return consultarCosta(overpassAlternativoClient, "alternativa", consulta);
+    }
+
+    private Boolean consultarCosta(RestClient client, String instancia, String consulta) {
         try {
+            // Enviamos a consulta como formulário POST, evitando URLs GET extensas.
+            String respostaJson = client.post()
+                    .uri("/api/interpreter")
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body("data=" + URLEncoder.encode(consulta, StandardCharsets.UTF_8))
+                    .retrieve()
+                    .body(String.class);
 
-            String respostaJson =
-                    overpassClient
-                            .get()
-                            .uri(uriBuilder ->
-                                    uriBuilder
-                                            .path(
-                                                    "/api/interpreter"
-                                            )
-                                            .queryParam(
-                                                    "data",
-                                                    consulta
-                                            )
-                                            .build()
-                            )
-                            .retrieve()
-                            .body(
-                                    String.class
-                            );
-
-            if (
-                    respostaJson == null ||
-                    respostaJson.isBlank()
-            ) {
-
-                System.out.println(
-                        "Overpass não retornou conteúdo "
-                                + "na validação costeira."
-                );
-
-                return false;
+            if (respostaJson == null || respostaJson.isBlank()) {
+                throw new IllegalStateException("Resposta vazia da Overpass");
             }
 
-            Map<?, ?> resposta =
-                    objectMapper.readValue(
-                            respostaJson,
-                            Map.class
-                    );
-
-            Object elementsObj =
-                    resposta.get(
-                            "elements"
-                    );
-
-            boolean encontrouCosta =
-                    elementsObj
-                            instanceof List<?> elements &&
-                    !elements.isEmpty();
-
-            if (encontrouCosta) {
-
-                System.out.println(
-                        "Linha costeira encontrada em até "
-                                + (RAIO_COSTA_METROS / 1000)
-                                + " km de "
-                                + latitude
-                                + ", "
-                                + longitude
-                );
-
-            } else {
-
-                System.out.println(
-                        "Nenhuma linha costeira encontrada em até "
-                                + (RAIO_COSTA_METROS / 1000)
-                                + " km de "
-                                + latitude
-                                + ", "
-                                + longitude
-                );
+            Map<?, ?> resposta = objectMapper.readValue(respostaJson, Map.class);
+            Object elementos = resposta.get("elements");
+            if (!(elementos instanceof List<?> lista)) {
+                throw new IllegalStateException("Resposta da Overpass sem lista de elementos");
             }
 
+            boolean encontrouCosta = !lista.isEmpty();
+            System.out.println("Overpass " + instancia + ": "
+                    + (encontrouCosta ? "costa encontrada" : "costa não encontrada")
+                    + " no raio de " + (RAIO_COSTA_METROS / 1000) + " km.");
             return encontrouCosta;
-
         } catch (Exception e) {
-
-            /*
-             * FALHA SEGURA
-             *
-             * Se não conseguimos confirmar que existe
-             * litoral próximo, não mostramos maré.
-             *
-             * Isso é preferível a apresentar informação
-             * marítima incorreta para um destino interior.
-             */
-            System.out.println(
-                    "Não foi possível validar proximidade "
-                            + "com a costa: "
-                            + e.getMessage()
-            );
-
-            return false;
+            System.out.println("Falha na validação costeira pela Overpass "
+                    + instancia + ": " + e.getMessage());
+            return null;
         }
     }
 
