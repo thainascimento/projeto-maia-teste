@@ -29,6 +29,8 @@ public class Viagem {
 
     private String cidade;
 
+    private String bairro;
+
     private String estado;
 
     private String pais;
@@ -137,6 +139,17 @@ public class Viagem {
     ) {
         this.cidade =
                 cidade;
+    }
+
+    public String getBairro() {
+        return bairro;
+    }
+
+    public void setBairro(
+            String bairro
+    ) {
+        this.bairro =
+                bairro;
     }
 
     public String getEstado() {

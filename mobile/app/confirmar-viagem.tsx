@@ -101,6 +101,8 @@ export default function ConfirmarViagemScreen() {
     setBuscandoSugestoes,
   ] = useState(false);
 
+  const [bairro, setBairro] = useState('');
+
   const requisicaoAtualRef =
     useRef(0);
 
@@ -605,70 +607,67 @@ export default function ConfirmarViagemScreen() {
     return celulas;
   }
 
-  async function buscarCoordenadas() {
-    if (
-      modoDireto &&
-      destinoSelecionado
-    ) {
-      return {
-        nome:
-          destinoSelecionado.nome,
+  async function buscarCoordenadas(): Promise<GeocodingResponse> {
+    // Mantém as coordenadas da cidade como alternativa segura.
+    const coordenadasCidade: GeocodingResponse =
+      modoDireto && destinoSelecionado
+        ? {
+            nome: destinoSelecionado.nome,
+            latitude: destinoSelecionado.latitude,
+            longitude: destinoSelecionado.longitude,
+          }
+        : await consultarGeocodificacao(
+            [cidade, estado, pais].filter(Boolean).join(', ')
+          );
 
-        latitude:
-          destinoSelecionado.latitude,
-
-        longitude:
-          destinoSelecionado.longitude,
-      };
+    const bairroInformado = bairro.trim();
+    if (!bairroInformado) {
+      return coordenadasCidade;
     }
 
-    const partes = [
-      cidade,
-      estado,
-      pais,
-    ].filter(
-      (item) =>
-        item &&
-        item.trim()
+    try {
+      const resultadoBairro = await consultarGeocodificacao(
+        [bairroInformado, cidade, estado, pais || 'Brasil']
+          .filter(Boolean)
+          .join(', ')
+      );
+
+      // A busca pode devolver somente a cidade quando não acha o bairro.
+      // Não substituímos as coordenadas sem evidência do bairro e da cidade.
+      const normalizar = (valor: string) =>
+        valor.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+      const nomeEncontrado = normalizar(resultadoBairro.nome);
+      if (
+        nomeEncontrado.includes(normalizar(bairroInformado)) &&
+        nomeEncontrado.includes(normalizar(cidade.trim()))
+      ) {
+        return resultadoBairro;
+      }
+      console.warn('Bairro não confirmado na geocodificação; usando coordenadas da cidade.');
+    } catch (erro) {
+      console.warn('Não foi possível localizar o bairro; usando coordenadas da cidade.', erro);
+    }
+
+    return coordenadasCidade;
+  }
+
+  async function consultarGeocodificacao(textoBusca: string): Promise<GeocodingResponse> {
+    const response = await fetchAutenticado(
+      `/geocoding/buscar?texto=${encodeURIComponent(textoBusca)}`
     );
 
-    const textoBusca =
-      partes.join(
-        ', '
-      );
-
-    const response =
-      await fetchAutenticado(
-        `/geocoding/buscar?texto=${encodeURIComponent(
-          textoBusca
-        )}`
-      );
-
     if (!response.ok) {
-      const mensagem =
-        await response.text();
-
-      throw new Error(
-        mensagem ||
-          'Não foi possível localizar o destino.'
-      );
+      const mensagem = await response.text();
+      throw new Error(mensagem || 'Não foi possível localizar o destino.');
     }
 
-    const coordenadas:
-      GeocodingResponse =
-      await response.json();
-
+    const coordenadas: GeocodingResponse = await response.json();
     if (
-      coordenadas.latitude ==
-        null ||
-      coordenadas.longitude ==
-        null
+      !Number.isFinite(coordenadas.latitude) ||
+      !Number.isFinite(coordenadas.longitude)
     ) {
-      throw new Error(
-        'As coordenadas do destino não foram encontradas.'
-      );
+      throw new Error('As coordenadas do destino não foram encontradas.');
     }
-
     return coordenadas;
   }
 
@@ -758,6 +757,8 @@ export default function ConfirmarViagemScreen() {
 
         estado:
           estado.trim(),
+
+        bairro: bairro.trim() || null,
 
         pais:
           pais.trim(),
@@ -1137,6 +1138,22 @@ export default function ConfirmarViagemScreen() {
             </View>
           </View>
         )}
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Bairro ou região (opcional)</Text>
+          <Text style={styles.helper}>
+            Informe uma região para localizar sua viagem com mais precisão.
+          </Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Ex.: Ponta Verde"
+            placeholderTextColor="#999"
+            value={bairro}
+            onChangeText={setBairro}
+            autoCapitalize="words"
+            autoCorrect={false}
+          />
+        </View>
 
         <View
           style={
