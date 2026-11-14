@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
@@ -29,6 +30,8 @@ public class MareService {
      * de influência da maré.
      */
     private static final int RAIO_COSTA_METROS = 10_000;
+    private static final String OVERPASS_USER_AGENT =
+            "MAIA-Teste/1.0 (https://github.com/thainascimento/projeto-maia-teste)";
 
     private final RestClient worldTidesClient;
     private final RestClient overpassClient;
@@ -55,11 +58,13 @@ public class MareService {
                         .baseUrl(
                                 "https://overpass-api.de"
                         )
+                        .defaultHeader(HttpHeaders.USER_AGENT, OVERPASS_USER_AGENT)
                         .build();
 
         this.overpassAlternativoClient =
                 RestClient.builder()
                         .baseUrl("https://overpass.private.coffee")
+                        .defaultHeader(HttpHeaders.USER_AGENT, OVERPASS_USER_AGENT)
                         .build();
 
         this.objectMapper =
