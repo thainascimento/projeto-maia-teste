@@ -43,6 +43,15 @@ type GeocodingSugestao = {
   longitude: number;
 };
 
+type BairroSugestao = {
+  nome: string;
+  cidade: string;
+  estado: string | null;
+  pais: string | null;
+  latitude: number;
+  longitude: number;
+};
+
 export default function ConfirmarViagemScreen() {
   const params =
     useLocalSearchParams<{
@@ -102,6 +111,10 @@ export default function ConfirmarViagemScreen() {
   ] = useState(false);
 
   const [bairro, setBairro] = useState('');
+  const [bairroSelecionado, setBairroSelecionado] = useState<BairroSugestao | null>(null);
+  const [sugestoesBairro, setSugestoesBairro] = useState<BairroSugestao[]>([]);
+  const [buscandoBairros, setBuscandoBairros] = useState(false);
+  const requisicaoBairroRef = useRef(0);
 
   const requisicaoAtualRef =
     useRef(0);
@@ -388,9 +401,61 @@ export default function ConfirmarViagemScreen() {
     modoDireto,
   ]);
 
+  useEffect(() => {
+    const texto = bairro.trim();
+    if (!cidade.trim() || texto.length < 2 ||
+        (bairroSelecionado && bairroSelecionado.nome === texto)) {
+      requisicaoBairroRef.current += 1;
+      setSugestoesBairro([]);
+      setBuscandoBairros(false);
+      return;
+    }
+
+    const id = ++requisicaoBairroRef.current;
+    const temporizador = setTimeout(async () => {
+      setBuscandoBairros(true);
+      try {
+        const query = new URLSearchParams({
+          texto, cidade, estado, pais: pais || 'Brasil',
+        });
+        const response = await fetchAutenticado(
+          `/geocoding/bairros/sugestoes?${query.toString()}`
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const resultados: BairroSugestao[] = await response.json();
+        if (id === requisicaoBairroRef.current) {
+          setSugestoesBairro(Array.isArray(resultados) ? resultados : []);
+        }
+      } catch (erro) {
+        if (id === requisicaoBairroRef.current) {
+          console.warn('Falha ao buscar sugestões de bairros:', erro);
+          setSugestoesBairro([]);
+        }
+      } finally {
+        if (id === requisicaoBairroRef.current) setBuscandoBairros(false);
+      }
+    }, 300);
+    return () => clearTimeout(temporizador);
+  }, [bairro, bairroSelecionado, cidade, estado, pais]);
+
+  function alterarBairro(texto: string) {
+    setBairro(texto);
+    setBairroSelecionado(null);
+    setSugestoesBairro([]);
+  }
+
+  function selecionarBairro(sugestao: BairroSugestao) {
+    requisicaoBairroRef.current += 1;
+    setBairro(sugestao.nome);
+    setBairroSelecionado(sugestao);
+    setSugestoesBairro([]);
+    setBuscandoBairros(false);
+  }
+
   function alterarDestinoManual(
     texto: string
   ) {
+    alterarBairro('');
     setDestinoManual(
       texto
     );
@@ -403,6 +468,7 @@ export default function ConfirmarViagemScreen() {
   function selecionarDestino(
     sugestao: GeocodingSugestao
   ) {
+    alterarBairro('');
     requisicaoAtualRef.current +=
       1;
 
@@ -608,47 +674,21 @@ export default function ConfirmarViagemScreen() {
   }
 
   async function buscarCoordenadas(): Promise<GeocodingResponse> {
-    // Mantém as coordenadas da cidade como alternativa segura.
-    const coordenadasCidade: GeocodingResponse =
-      modoDireto && destinoSelecionado
-        ? {
-            nome: destinoSelecionado.nome,
-            latitude: destinoSelecionado.latitude,
-            longitude: destinoSelecionado.longitude,
-          }
-        : await consultarGeocodificacao(
-            [cidade, estado, pais].filter(Boolean).join(', ')
-          );
-
-    const bairroInformado = bairro.trim();
-    if (!bairroInformado) {
-      return coordenadasCidade;
+    if (bairroSelecionado) {
+      return {
+        nome: [bairroSelecionado.nome, cidade, estado, pais].filter(Boolean).join(', '),
+        latitude: bairroSelecionado.latitude,
+        longitude: bairroSelecionado.longitude,
+      };
     }
-
-    try {
-      const resultadoBairro = await consultarGeocodificacao(
-        [bairroInformado, cidade, estado, pais || 'Brasil']
-          .filter(Boolean)
-          .join(', ')
-      );
-
-      // A busca pode devolver somente a cidade quando não acha o bairro.
-      // Não substituímos as coordenadas sem evidência do bairro e da cidade.
-      const normalizar = (valor: string) =>
-        valor.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-      const nomeEncontrado = normalizar(resultadoBairro.nome);
-      if (
-        nomeEncontrado.includes(normalizar(bairroInformado)) &&
-        nomeEncontrado.includes(normalizar(cidade.trim()))
-      ) {
-        return resultadoBairro;
-      }
-      console.warn('Bairro não confirmado na geocodificação; usando coordenadas da cidade.');
-    } catch (erro) {
-      console.warn('Não foi possível localizar o bairro; usando coordenadas da cidade.', erro);
+    if (modoDireto && destinoSelecionado) {
+      return {
+        nome: destinoSelecionado.nome,
+        latitude: destinoSelecionado.latitude,
+        longitude: destinoSelecionado.longitude,
+      };
     }
-
-    return coordenadasCidade;
+    return consultarGeocodificacao([cidade, estado, pais].filter(Boolean).join(', '));
   }
 
   async function consultarGeocodificacao(textoBusca: string): Promise<GeocodingResponse> {
@@ -672,6 +712,12 @@ export default function ConfirmarViagemScreen() {
   }
 
   async function confirmarViagem() {
+    if (bairro.trim() && !bairroSelecionado) {
+      Alert.alert('Selecione um bairro',
+        'Escolha um bairro nas sugestões reais exibidas ou deixe o campo vazio.');
+      return;
+    }
+
     if (
       modoDireto &&
       !destinoSelecionado
@@ -758,7 +804,7 @@ export default function ConfirmarViagemScreen() {
         estado:
           estado.trim(),
 
-        bairro: bairro.trim() || null,
+        bairro: bairroSelecionado?.nome ?? null,
 
         pais:
           pais.trim(),
@@ -1145,14 +1191,45 @@ export default function ConfirmarViagemScreen() {
             Informe uma região para localizar sua viagem com mais precisão.
           </Text>
           <TextInput
-            style={styles.input}
+            style={[styles.input, bairroSelecionado && styles.inputSelected]}
             placeholder="Ex.: Ponta Verde"
             placeholderTextColor="#999"
             value={bairro}
-            onChangeText={setBairro}
+            onChangeText={alterarBairro}
             autoCapitalize="words"
             autoCorrect={false}
           />
+          {buscandoBairros && (
+            <View style={styles.searchingContainer}>
+              <ActivityIndicator size="small" color="#6d28d9" />
+              <Text style={styles.searchingText}>Buscando bairros...</Text>
+            </View>
+          )}
+          {!buscandoBairros && sugestoesBairro.length > 0 && (
+            <View style={styles.suggestionsContainer}>
+              {sugestoesBairro.map((sugestao, indice) => (
+                <Pressable
+                  key={`${sugestao.nome}-${sugestao.latitude}-${indice}`}
+                  style={styles.suggestionItem}
+                  onPress={() => selecionarBairro(sugestao)}
+                >
+                  <Text style={styles.suggestionCity}>{sugestao.nome}</Text>
+                  <Text style={styles.suggestionDetails}>
+                    {[sugestao.cidade, sugestao.estado, sugestao.pais]
+                      .filter(Boolean).join(', ')}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          )}
+          {bairroSelecionado && (
+            <View style={styles.selectedDestination}>
+              <Text style={styles.selectedDestinationLabel}>BAIRRO SELECIONADO</Text>
+              <Text style={styles.selectedDestinationText}>
+                {[bairroSelecionado.nome, cidade, estado].filter(Boolean).join(', ')}
+              </Text>
+            </View>
+          )}
         </View>
 
         <View

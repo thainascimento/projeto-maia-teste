@@ -3,6 +3,7 @@ package com.maia.backend.geocoding;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.text.Normalizer;
 import java.util.Map;
 import java.util.Set;
 
@@ -566,6 +567,97 @@ public class GeoapifyService {
                     )
             );
         }
+    }
+
+    // Sugestões de bairros/áreas reais, restritas à cidade selecionada.
+    public List<BairroSugestaoResponse> buscarSugestoesBairros(
+            String texto, String cidade, String estado, String pais) {
+        if (texto == null || texto.trim().length() < 2 ||
+                cidade == null || cidade.isBlank()) {
+            return List.of();
+        }
+
+        String consulta = String.join(", ", List.of(
+                texto.trim(), cidade.trim(),
+                estado == null ? "" : estado.trim(),
+                pais == null || pais.isBlank() ? "Brasil" : pais.trim()
+        ).stream().filter(parte -> !parte.isBlank()).toList());
+
+        String respostaJson = restClient.get()
+                .uri(uriBuilder -> uriBuilder.path("/v1/geocode/autocomplete")
+                        .queryParam("text", consulta)
+                        .queryParam("type", "locality")
+                        .queryParam("format", "json")
+                        .queryParam("limit", 10)
+                        .queryParam("lang", "pt")
+                        .queryParam("apiKey", apiKey)
+                        .build())
+                .retrieve().body(String.class);
+
+        if (respostaJson == null || respostaJson.isBlank()) {
+            return List.of();
+        }
+
+        try {
+            Map<String, Object> resposta = objectMapper.readValue(
+                    respostaJson, new TypeReference<Map<String, Object>>() {});
+            if (!(resposta.get("results") instanceof List<?> resultados)) {
+                return List.of();
+            }
+
+            List<BairroSugestaoResponse> bairros = new ArrayList<>();
+            Set<String> vistos = new HashSet<>();
+            for (Object item : resultados) {
+                if (!(item instanceof Map<?, ?> resultado)) continue;
+
+                String tipo = obterTexto(resultado.get("result_type"));
+                // locality engloba cidades e estados: só aceitamos níveis de bairro.
+                if (!"suburb".equals(tipo) && !"district".equals(tipo)) continue;
+
+                String cidadeResultado = primeiroTextoValido(
+                        resultado.get("city"), resultado.get("town"),
+                        resultado.get("village"), resultado.get("municipality"));
+                if (cidadeResultado == null ||
+                        !normalizarLocal(cidadeResultado).equals(normalizarLocal(cidade))) continue;
+
+                String paisResultado = obterTexto(resultado.get("country"));
+                String paisEsperado = pais == null || pais.isBlank() ? "Brasil" : pais;
+                if (paisResultado == null ||
+                        !normalizarLocal(paisResultado).equals(normalizarLocal(paisEsperado))) continue;
+
+                String estadoResultado = obterTexto(resultado.get("state"));
+                String sigla = obterTexto(resultado.get("state_code"));
+                if ("Brasil".equalsIgnoreCase(paisEsperado) && sigla != null) {
+                    estadoResultado = nomeEstadoBrasileiro(sigla);
+                }
+                if (estado != null && !estado.isBlank() &&
+                        (estadoResultado == null ||
+                         !normalizarLocal(estadoResultado).equals(normalizarLocal(estado)))) continue;
+
+                String nome = primeiroTextoValido(
+                        resultado.get("suburb"), resultado.get("district"), resultado.get("name"));
+                if (nome == null ||
+                        !normalizarLocal(nome).contains(normalizarLocal(texto.trim()))) continue;
+
+                if (!(resultado.get("lat") instanceof Number lat) ||
+                        !(resultado.get("lon") instanceof Number lon)) continue;
+
+                String chave = normalizarLocal(nome);
+                if (!vistos.add(chave)) continue;
+                bairros.add(new BairroSugestaoResponse(
+                        nome, cidadeResultado, estadoResultado, paisResultado,
+                        lat.doubleValue(), lon.doubleValue()));
+            }
+            return bairros;
+        } catch (Exception e) {
+            throw new IllegalStateException("Falha ao interpretar sugestões de bairros.", e);
+        }
+    }
+
+    private String normalizarLocal(String texto) {
+        return Normalizer.normalize(texto == null ? "" : texto, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}+", "")
+                .toLowerCase(java.util.Locale.ROOT).trim();
     }
 
     private String obterTexto(
