@@ -1,9 +1,9 @@
 
 import { buscarToken } from '@/services/auth';
 
-// URL do backend MAIA via ngrok.
+// URL do backend MAIA TESTE no Render.
 export const API_URL =
-  'https://envoy-exerciser-swan.ngrok-free.dev';
+  'https://maia-teste-backend.onrender.com';
 
 /*
  * Realiza requisições autenticadas ao backend.
