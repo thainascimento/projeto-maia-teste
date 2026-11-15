@@ -74,6 +74,7 @@ type MareEvento = {
 
 type Mare = {
   disponivel: boolean;
+  motivoIndisponibilidade?: string | null;
 
   latitude: number | null;
   longitude: number | null;
@@ -2581,29 +2582,23 @@ export default function ViagensScreen() {
                   styles.tideTitle
                 }
               >
-                Informação indisponível
+                {mare?.motivoIndisponibilidade === 'SEM_COSTA_PROXIMA'
+                  ? 'Não foi identificado mar próximo a este destino.'
+                  : 'Não foi possível consultar as informações de maré no momento.'}
               </Text>
             </View>
           </View>
 
-          <Pressable
-            style={
-              styles.retryTideButton
-            }
-            onPress={() =>
-              carregarMare(
-                item
-              )
-            }
-          >
-            <Text
-              style={
-                styles.retryTideText
-              }
+          {mare?.motivoIndisponibilidade !== 'SEM_COSTA_PROXIMA' && (
+            <Pressable
+              style={styles.retryTideButton}
+              onPress={() => carregarMare(item)}
             >
-              TENTAR NOVAMENTE
-            </Text>
-          </Pressable>
+              <Text style={styles.retryTideText}>
+                TENTAR NOVAMENTE
+              </Text>
+            </Pressable>
+          )}
         </View>
       );
     }

@@ -1,5 +1,7 @@
 package com.maia.backend.mare;
 
+import java.time.Instant;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
@@ -8,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
@@ -21,6 +24,13 @@ public class MareService {
     private static final ZoneOffset FUSO_LITORAL_BRASILEIRO = ZoneOffset.ofHours(-3);
     private static final int CONNECT_TIMEOUT_MS = 4_000;
     private static final int READ_TIMEOUT_MS = 15_000;
+    // Os dados diários de maré são previsões fixas da tábua; cache reduz acessos à API.
+    private static final Duration CACHE_PORTO = Duration.ofHours(12);
+    private static final Duration CACHE_DIA = Duration.ofHours(12);
+    private static final int LIMITE_CACHE = 300;
+
+    private final Map<String, CacheEntry<Map<?, ?>>> portosCache = new ConcurrentHashMap<>();
+    private final Map<String, CacheEntry<List<MareEventoResponse>>> diasCache = new ConcurrentHashMap<>();
 
     private final RestClient tabuaMareClient;
     private final CostaService costaService;
@@ -43,16 +53,11 @@ public class MareService {
     public MareResponse buscarMare(double latitude, double longitude) {
         // Não consultamos marés para destinos a mais de 10 km do litoral.
         if (!costaService.possuiCostaProxima(latitude, longitude)) {
-            return MareResponse.indisponivel();
+            return MareResponse.indisponivel("SEM_COSTA_PROXIMA");
         }
 
         try {
-            String coordenadas = "[" + latitude + "," + longitude + "]";
-            String respostaPorto = tabuaMareClient.get()
-                    .uri("/api/v2/nearest-harbor-independent-state/{coordenadas}", coordenadas)
-                    .retrieve()
-                    .body(String.class);
-            Map<?, ?> porto = primeiroItem(respostaPorto);
+            Map<?, ?> porto = obterPorto(latitude, longitude);
             if (porto == null) {
                 return MareResponse.indisponivel();
             }
@@ -70,9 +75,9 @@ public class MareService {
 
             // Consultamos hoje e amanhã para localizar a próxima maré mesmo à noite.
             // Se o catálogo ainda não tiver o ano novo, preservamos os dados de hoje.
-            consultarDia(idPorto, hoje, anoDados, eventos);
+            eventos.addAll(obterDia(idPorto, hoje, anoDados));
             if (amanha.getYear() == hoje.getYear()) {
-                consultarDia(idPorto, amanha, anoDados, eventos);
+                eventos.addAll(obterDia(idPorto, amanha, anoDados));
             }
 
             if (eventos.isEmpty()) {
@@ -97,6 +102,44 @@ public class MareService {
                     + " - " + e.getMessage());
             return MareResponse.indisponivel();
         }
+    }
+
+    private synchronized Map<?, ?> obterPorto(double latitude, double longitude) throws Exception {
+        // Arredondamento a 3 casas (~110 m) evita chamadas duplicadas próximas.
+        String chave = Math.round(latitude * 1000) + ":" + Math.round(longitude * 1000);
+        CacheEntry<Map<?, ?>> existente = portosCache.get(chave);
+        if (existente != null && Instant.now().isBefore(existente.expiraEm())) {
+            return existente.valor();
+        }
+
+        String coordenadas = "[" + latitude + "," + longitude + "]";
+        String resposta = tabuaMareClient.get()
+                .uri("/api/v2/nearest-harbor-independent-state/{coordenadas}", coordenadas)
+                .retrieve()
+                .body(String.class);
+        Map<?, ?> porto = primeiroItem(resposta);
+        if (porto != null) {
+            if (portosCache.size() >= LIMITE_CACHE) portosCache.clear();
+            portosCache.put(chave, new CacheEntry<>(porto, Instant.now().plus(CACHE_PORTO)));
+        }
+        return porto;
+    }
+
+    private synchronized List<MareEventoResponse> obterDia(String idPorto, LocalDate dia,
+                                                             Integer anoDados) throws Exception {
+        if (anoDados != null && anoDados != dia.getYear()) return List.of();
+        String chave = idPorto + ":" + dia;
+        CacheEntry<List<MareEventoResponse>> existente = diasCache.get(chave);
+        if (existente != null && Instant.now().isBefore(existente.expiraEm())) {
+            return existente.valor();
+        }
+        List<MareEventoResponse> eventos = new ArrayList<>();
+        consultarDia(idPorto, dia, anoDados, eventos);
+        if (!eventos.isEmpty()) {
+            if (diasCache.size() >= LIMITE_CACHE) diasCache.clear();
+            diasCache.put(chave, new CacheEntry<>(List.copyOf(eventos), Instant.now().plus(CACHE_DIA)));
+        }
+        return eventos;
     }
 
     private void consultarDia(String idPorto, LocalDate dia, Integer anoDados,
@@ -222,6 +265,8 @@ public class MareService {
         Object valor = mapa.get(chave);
         return valor instanceof Number numero ? numero.doubleValue() : null;
     }
+
+    private record CacheEntry<T>(T valor, Instant expiraEm) { }
 
     private record HorarioMare(LocalTime hora, double nivel) { }
 }

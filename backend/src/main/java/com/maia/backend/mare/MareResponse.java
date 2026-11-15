@@ -1,25 +1,24 @@
+
 package com.maia.backend.mare;
 
 import java.util.List;
 
 public record MareResponse(
-
         boolean disponivel,
-
         Double latitude,
         Double longitude,
-
         String estacao,
         String datum,
-
         MareEventoResponse proximaMareBaixa,
         MareEventoResponse proximaMareAlta,
-
-        List<MareEventoResponse> eventos
-
+        List<MareEventoResponse> eventos,
+        String motivoIndisponibilidade
 ) {
-
     public static MareResponse indisponivel() {
+        return indisponivel("ERRO_CONSULTA");
+    }
+
+    public static MareResponse indisponivel(String motivo) {
         return new MareResponse(
                 false,
                 null,
@@ -28,7 +27,8 @@ public record MareResponse(
                 null,
                 null,
                 null,
-                List.of()
+                List.of(),
+                motivo
         );
     }
 
@@ -49,7 +49,8 @@ public record MareResponse(
                 datum,
                 proximaMareBaixa,
                 proximaMareAlta,
-                eventos == null ? List.of() : eventos
+                eventos == null ? List.of() : eventos,
+                null
         );
     }
 }
