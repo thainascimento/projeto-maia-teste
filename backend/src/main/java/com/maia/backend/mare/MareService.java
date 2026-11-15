@@ -40,13 +40,15 @@ public class MareService {
     private final RestClient overpassClient;
     private final RestClient overpassAlternativoClient;
 
+    private final CostaService costaService;
     private final ObjectMapper objectMapper;
 
     @Value("${worldtides.api.key}")
     private String apiKey;
 
     public MareService(
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            CostaService costaService
     ) {
 
         this.worldTidesClient =
@@ -72,8 +74,8 @@ public class MareService {
                         .requestFactory(criarRequestFactoryComTimeout())
                         .build();
 
-        this.objectMapper =
-                objectMapper;
+        this.objectMapper = objectMapper;
+        this.costaService = costaService;
     }
 
     private static SimpleClientHttpRequestFactory criarRequestFactoryComTimeout() {
@@ -99,7 +101,7 @@ public class MareService {
          * coordenadas interiores.
          */
         Boolean costaProxima =
-                possuiCostaProxima(
+                costaService.possuiCostaProxima(
                         latitude,
                         longitude
                 );
