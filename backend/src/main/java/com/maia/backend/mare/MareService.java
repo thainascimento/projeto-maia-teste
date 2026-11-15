@@ -440,12 +440,16 @@ public class MareService {
     private Boolean consultarCosta(RestClient client, String instancia, String consulta) {
         try {
             // Enviamos a consulta como formulário POST, evitando URLs GET extensas.
-            String respostaJson = client.post()
+            byte[] respostaBytes = client.post()
                     .uri("/api/interpreter")
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .body("data=" + URLEncoder.encode(consulta, StandardCharsets.UTF_8))
                     .retrieve()
-                    .body(String.class);
+                    .body(byte[].class);
+
+            String respostaJson = respostaBytes == null
+                    ? null
+                    : new String(respostaBytes, StandardCharsets.UTF_8);
 
             if (respostaJson == null || respostaJson.isBlank()) {
                 throw new IllegalStateException("Resposta vazia da Overpass");
