@@ -469,6 +469,7 @@ public class MareService {
         } catch (Exception e) {
             System.out.println("Falha na validação costeira pela Overpass "
                     + instancia + ": " + e.getMessage());
+            e.printStackTrace();
             return null;
         }
     }
