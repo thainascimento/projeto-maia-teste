@@ -2541,14 +2541,8 @@ export default function ViagensScreen() {
       ];
 
     if (
-      mare &&
+      !mare ||
       !mare.disponivel
-    ) {
-      return null;
-    }
-
-    if (
-      !mare
     ) {
       return (
         <View
