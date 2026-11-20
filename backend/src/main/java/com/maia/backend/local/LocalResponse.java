@@ -36,6 +36,12 @@ public class LocalResponse {
     private Boolean acessivelCadeirante;
     private Boolean possuiInternet;
 
+    // Dados opcionais da fotografia obtida no Unsplash.
+    private String imagemUrl;
+    private String imagemFotografo;
+    private String imagemFotografoUrl;
+    private String imagemUnsplashUrl;
+
     public LocalResponse() {
     }
 
@@ -285,5 +291,36 @@ public class LocalResponse {
     ) {
         this.possuiInternet =
                 possuiInternet;
+    }
+    public String getImagemUrl() {
+        return imagemUrl;
+    }
+
+    public void setImagemUrl(String imagemUrl) {
+        this.imagemUrl = imagemUrl;
+    }
+
+    public String getImagemFotografo() {
+        return imagemFotografo;
+    }
+
+    public void setImagemFotografo(String imagemFotografo) {
+        this.imagemFotografo = imagemFotografo;
+    }
+
+    public String getImagemFotografoUrl() {
+        return imagemFotografoUrl;
+    }
+
+    public void setImagemFotografoUrl(String imagemFotografoUrl) {
+        this.imagemFotografoUrl = imagemFotografoUrl;
+    }
+
+    public String getImagemUnsplashUrl() {
+        return imagemUnsplashUrl;
+    }
+
+    public void setImagemUnsplashUrl(String imagemUnsplashUrl) {
+        this.imagemUnsplashUrl = imagemUnsplashUrl;
     }
 }
