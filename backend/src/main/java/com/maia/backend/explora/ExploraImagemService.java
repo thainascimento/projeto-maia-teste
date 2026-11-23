@@ -36,6 +36,7 @@ public class ExploraImagemService {
     // Busca geografica conservadora: fotos com coordenadas proximas ao proprio local.
     private static final int RAIO_FOTO_METROS = 200;
     private static final int MAX_CONSULTAS_POR_REQUISICAO = 10;
+    private static final int MAX_BUSCAS_POR_NOME = 4;
     private static final Duration CACHE_COM_FOTO = Duration.ofHours(24);
     private static final Duration CACHE_SEM_FOTO = Duration.ofHours(2);
 
@@ -90,6 +91,31 @@ public class ExploraImagemService {
 
             if (imagem == null) continue;
             aplicarImagem(local, imagem);
+        }
+
+        // Segunda tentativa: apenas nomes específicos e resultados verificáveis.
+        // Nunca substitui fotos aprovadas nem imagens já encontradas.
+        int buscasNome = 0;
+        for (LocalResponse local : locais) {
+            if (buscasNome >= MAX_BUSCAS_POR_NOME) break;
+            if (local == null || local.getId() == null || local.getNome() == null) continue;
+            if (!coordenadasValidas(local)) continue;
+            if (local.getImagemUrl() != null && !local.getImagemUrl().isBlank()) continue;
+            if (palavrasRelevantes(local.getNome()).size() < 3) continue;
+            if (local.getCidade() == null || local.getCidade().isBlank()) continue;
+
+            String chave = "nome:" + local.getId();
+            ResultadoCache existente = cache.get(chave);
+            Imagem imagem;
+            if (existente != null && Instant.now().isBefore(existente.expiraEm())) {
+                imagem = existente.imagem();
+            } else {
+                buscasNome++;
+                imagem = buscarFotoPorNome(local);
+                cache.put(chave, new ResultadoCache(imagem, Instant.now().plus(
+                        imagem == null ? CACHE_SEM_FOTO : CACHE_COM_FOTO)));
+            }
+            if (imagem != null) aplicarImagem(local, imagem);
         }
     }
 
@@ -185,6 +211,86 @@ public class ExploraImagemService {
             LOG.log(Level.FINE, "Nao foi possivel obter imagem para: " + local.getNome(), e);
             return null;
         }
+    }
+
+    // Consulta por nome: aceita somente fotos cuja identidade seja verificável.
+    // Se não houver coordenadas na foto, exige nome completo + cidade no título.
+    private Imagem buscarFotoPorNome(LocalResponse local) {
+        List<String> palavrasLocal = palavrasRelevantes(local.getNome());
+        List<String> palavrasCidade = palavrasRelevantes(local.getCidade());
+        if (palavrasLocal.size() < 3 || palavrasCidade.isEmpty()) return null;
+
+        String termos = String.join(" ", palavrasLocal) + " " + String.join(" ", palavrasCidade);
+        String url = API + "?action=query&format=json&formatversion=2"
+                + "&generator=search&gsrnamespace=6&gsrlimit=15"
+                + "&gsrsearch=" + codificar(termos)
+                + "&prop=imageinfo%7Ccoordinates&iiprop=url%7Cextmetadata"
+                + "&iiurlwidth=640";
+
+        try {
+            HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                    .timeout(Duration.ofSeconds(3))
+                    .header("User-Agent", USER_AGENT)
+                    .header("Accept", "application/json")
+                    .GET().build();
+            HttpResponse<String> resposta = httpClient.send(req,
+                    HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (resposta.statusCode() != 200) return null;
+
+            Map<String, Object> dados = objectMapper.readValue(resposta.body(),
+                    new TypeReference<Map<String, Object>>() {});
+            List<Map<String, Object>> paginas = listaDeMapas(mapa(dados.get("query")).get("pages"));
+
+            for (Map<String, Object> pagina : paginas) {
+                String titulo = texto(pagina.get("title"));
+                if (!titulo.matches("(?i).*\\.(jpg|jpeg|png|webp)$")) continue;
+                List<String> palavrasTitulo = palavrasRelevantes(titulo);
+                if (!palavrasTitulo.containsAll(palavrasLocal)) continue;
+
+                boolean cidadeNoTitulo = palavrasTitulo.containsAll(palavrasCidade);
+                boolean coordenadaProxima = false;
+                for (Map<String, Object> ponto : listaDeMapas(pagina.get("coordinates"))) {
+                    Object lat = ponto.get("lat");
+                    Object lon = ponto.get("lon");
+                    if (lat instanceof Number la && lon instanceof Number lo
+                            && distanciaMetros(local.getLatitude(), local.getLongitude(),
+                                    la.doubleValue(), lo.doubleValue()) <= 500) {
+                        coordenadaProxima = true;
+                        break;
+                    }
+                }
+                if (!cidadeNoTitulo && !coordenadaProxima) continue;
+
+                List<Map<String, Object>> infos = listaDeMapas(pagina.get("imageinfo"));
+                if (infos.isEmpty()) continue;
+                Map<String, Object> info = infos.get(0);
+                Map<String, Object> metadados = mapa(info.get("extmetadata"));
+                String autor = limparHtml(texto(mapa(metadados.get("Artist")).get("value")));
+                String licenca = limparHtml(texto(mapa(metadados.get("LicenseShortName")).get("value")));
+                String paginaUrl = texto(info.get("descriptionurl"));
+                String imagemUrl = texto(info.get("thumburl"));
+                if (imagemUrl.isBlank()) imagemUrl = texto(info.get("url"));
+                if (autor.isBlank() || !licencaPermitida(licenca)) continue;
+                if (!imagemUrl.startsWith("https://")
+                        || !paginaUrl.startsWith("https://commons.wikimedia.org/")) continue;
+                return new Imagem(imagemUrl, autor, paginaUrl);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            LOG.log(Level.FINE, "Busca por nome falhou: " + local.getNome(), e);
+        }
+        return null;
+    }
+
+    private static double distanciaMetros(double lat1, double lon1,
+                                          double lat2, double lon2) {
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return 6371008.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     private static boolean coordenadasValidas(LocalResponse local) {
