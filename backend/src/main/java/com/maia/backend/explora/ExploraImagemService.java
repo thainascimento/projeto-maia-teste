@@ -218,8 +218,8 @@ public class ExploraImagemService {
         }
     }
 
-    // Consulta por nome: aceita somente fotos cuja identidade seja verificável.
-    // Se não houver coordenadas na foto, exige nome completo + cidade no título.
+    // Busca por nome com prova geografica: coordenadas proximas OU
+    // titulo iniciado pelo nome da atracao e municipio identificado.
     private Imagem buscarFotoPorNome(LocalResponse local) {
         List<String> palavrasLocal = palavrasRelevantes(local.getNome());
         if (palavrasLocal.size() < 2) return null;
@@ -259,19 +259,27 @@ public class ExploraImagemService {
 
                 boolean cidadeNoTitulo = !palavrasCidade.isEmpty()
                         && palavrasTitulo.containsAll(palavrasCidade);
+                List<Map<String, Object>> pontos = listaDeMapas(pagina.get("coordinates"));
+                boolean temCoordenadas = false;
                 boolean coordenadaProxima = false;
-                for (Map<String, Object> ponto : listaDeMapas(pagina.get("coordinates"))) {
+                for (Map<String, Object> ponto : pontos) {
                     Object lat = ponto.get("lat");
                     Object lon = ponto.get("lon");
-                    if (lat instanceof Number la && lon instanceof Number lo
-                            && distanciaMetros(local.getLatitude(), local.getLongitude(),
-                                    la.doubleValue(), lo.doubleValue()) <= 300) {
-                        coordenadaProxima = true;
-                        break;
+                    if (lat instanceof Number la && lon instanceof Number lo) {
+                        temCoordenadas = true;
+                        if (distanciaMetros(local.getLatitude(), local.getLongitude(),
+                                la.doubleValue(), lo.doubleValue()) <= 300) {
+                            coordenadaProxima = true;
+                            break;
+                        }
                     }
                 }
-                // Sem prova geografica OU cidade no titulo, nao assumir que e a atracao.
-                if (!cidadeNoTitulo && !coordenadaProxima) continue;
+                // Coordenadas explicitas e distantes invalidam a foto, mesmo na mesma cidade.
+                if (temCoordenadas && !coordenadaProxima) continue;
+                // Sem coordenadas, aceita apenas titulo que COMECA pelo nome da atracao
+                // e menciona a cidade. Exclui fotos de ruas, funerais, objetos de museu etc.
+                if (!temCoordenadas && !(cidadeNoTitulo
+                        && tituloComecaComNomeDaAtracao(titulo, local.getNome()))) continue;
 
                 List<Map<String, Object>> infos = listaDeMapas(pagina.get("imageinfo"));
                 if (infos.isEmpty()) continue;
@@ -293,6 +301,19 @@ public class ExploraImagemService {
             LOG.log(Level.FINE, "Busca por nome falhou: " + local.getNome(), e);
         }
         return null;
+    }
+
+    // Remove o prefixo File: e compara palavras em ordem, para evitar
+    // confundir uma pessoa ou monumento com uma rua, evento ou objeto homonimo.
+    private static boolean tituloComecaComNomeDaAtracao(String titulo, String nome) {
+        String nomeArquivo = titulo.replaceFirst("(?i)^File:", "")
+                .replaceFirst("(?i)\\.(jpg|jpeg|png|webp)$", "");
+        List<String> palavrasArquivo = palavrasRelevantes(nomeArquivo);
+        List<String> palavrasAtracao = palavrasRelevantes(nome);
+        if (palavrasAtracao.size() < 2 || palavrasArquivo.size() < palavrasAtracao.size()) {
+            return false;
+        }
+        return palavrasArquivo.subList(0, palavrasAtracao.size()).equals(palavrasAtracao);
     }
 
     private static double distanciaMetros(double lat1, double lon1,
