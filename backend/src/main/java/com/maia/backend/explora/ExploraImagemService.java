@@ -34,16 +34,17 @@ public class ExploraImagemService {
             "MAIAExplora/1.0 (https://github.com/thainascimento/projeto-maia-teste)";
 
     // Busca geografica conservadora: fotos com coordenadas proximas ao proprio local.
-    private static final int RAIO_FOTO_METROS = 200;
-    private static final int MAX_CONSULTAS_POR_REQUISICAO = 10;
-    private static final int MAX_BUSCAS_POR_NOME = 4;
+    private static final int RAIO_FOTO_METROS = 250;
+    private static final int MAX_CONSULTAS_POR_REQUISICAO = 6;
+    private static final int MAX_BUSCAS_POR_NOME = 6;
+    private static final Duration TEMPO_MAXIMO_IMAGENS = Duration.ofSeconds(10);
     private static final Duration CACHE_COM_FOTO = Duration.ofHours(24);
     private static final Duration CACHE_SEM_FOTO = Duration.ofHours(2);
 
     private static final Set<String> PALAVRAS_IGNORADAS = Set.of(
             "a", "o", "as", "os", "de", "da", "do", "das", "dos", "e", "em",
             "na", "no", "nas", "nos", "um", "uma", "the", "of", "at", "in",
-            "maceio", "alagoas", "brasil", "brazil", "foto", "imagem", "file",
+            "foto", "imagem", "file",
             "jpg", "jpeg", "png", "webp", "view", "photo", "image"
     );
 
@@ -62,63 +63,67 @@ public class ExploraImagemService {
     public void adicionarImagens(List<LocalResponse> locais) {
         if (locais == null || locais.isEmpty()) return;
 
-        int consultas = 0;
+        long prazo = System.nanoTime() + TEMPO_MAXIMO_IMAGENS.toNanos();
+        List<LocalResponse> pendentes = new ArrayList<>();
+
+        // Imagens ja verificadas e respostas positivas em cache nao gastam chamadas.
         for (LocalResponse local : locais) {
             if (local == null || local.getId() == null || local.getNome() == null) continue;
-            if (!coordenadasValidas(local)) continue;
-
-            // Fotos ja conferidas continuam disponiveis; novos destinos usam busca automatica.
             Imagem aprovada = fotoAprovada(local.getId());
             if (aprovada != null) {
                 aplicarImagem(local, aprovada);
                 continue;
             }
-
-            String chave = local.getId();
-            ResultadoCache existente = cache.get(chave);
-            Imagem imagem;
-
-            if (existente != null && Instant.now().isBefore(existente.expiraEm())) {
-                imagem = existente.imagem();
-            } else {
-                // Limita as chamadas externas para nao travar a resposta do Explora.
-                if (consultas >= MAX_CONSULTAS_POR_REQUISICAO) continue;
-                consultas++;
-                imagem = buscarFotoGeografica(local);
-                Duration ttl = imagem == null ? CACHE_SEM_FOTO : CACHE_COM_FOTO;
-                cache.put(chave, new ResultadoCache(imagem, Instant.now().plus(ttl)));
-            }
-
-            if (imagem == null) continue;
-            aplicarImagem(local, imagem);
+            if (!coordenadasValidas(local)) continue;
+            ResultadoCache porNome = cacheValido("nome:" + local.getId());
+            ResultadoCache porGeo = cacheValido("geo:" + local.getId());
+            Imagem foto = porNome != null && porNome.imagem() != null ? porNome.imagem()
+                    : porGeo != null ? porGeo.imagem() : null;
+            if (foto != null) aplicarImagem(local, foto);
+            else pendentes.add(local);
         }
 
-        // Segunda tentativa: apenas nomes específicos e resultados verificáveis.
-        // Nunca substitui fotos aprovadas nem imagens já encontradas.
+        // Primeiro nomes especificos, usando cidade dinamica, nao cidades fixas no codigo.
         int buscasNome = 0;
-        for (LocalResponse local : locais) {
-            if (buscasNome >= MAX_BUSCAS_POR_NOME) break;
-            if (local == null || local.getId() == null || local.getNome() == null) continue;
-            if (!coordenadasValidas(local)) continue;
+        for (LocalResponse local : pendentes) {
+            if (System.nanoTime() >= prazo || buscasNome >= MAX_BUSCAS_POR_NOME) break;
             if (local.getImagemUrl() != null && !local.getImagemUrl().isBlank()) continue;
-            if (palavrasRelevantes(local.getNome()).size() < 3) continue;
-            if (local.getCidade() == null || local.getCidade().isBlank()) continue;
-
+            if (palavrasRelevantes(local.getNome()).size() < 2) continue;
             String chave = "nome:" + local.getId();
-            ResultadoCache existente = cache.get(chave);
-            Imagem imagem;
-            if (existente != null && Instant.now().isBefore(existente.expiraEm())) {
-                imagem = existente.imagem();
-            } else {
-                buscasNome++;
-                imagem = buscarFotoPorNome(local);
-                cache.put(chave, new ResultadoCache(imagem, Instant.now().plus(
-                        imagem == null ? CACHE_SEM_FOTO : CACHE_COM_FOTO)));
-            }
+            if (cacheValido(chave) != null) continue;
+            buscasNome++;
+            Imagem imagem = buscarFotoPorNome(local);
+            armazenar(chave, imagem);
+            if (imagem != null) aplicarImagem(local, imagem);
+        }
+
+        // Em seguida, busca geografica somente para os pontos ainda sem imagem.
+        int buscasGeo = 0;
+        for (LocalResponse local : pendentes) {
+            if (System.nanoTime() >= prazo || buscasGeo >= MAX_CONSULTAS_POR_REQUISICAO) break;
+            if (local.getImagemUrl() != null && !local.getImagemUrl().isBlank()) continue;
+            if (palavrasRelevantes(local.getNome()).size() < 2) continue;
+            String chave = "geo:" + local.getId();
+            if (cacheValido(chave) != null) continue;
+            buscasGeo++;
+            Imagem imagem = buscarFotoGeografica(local);
+            armazenar(chave, imagem);
             if (imagem != null) aplicarImagem(local, imagem);
         }
     }
 
+    private ResultadoCache cacheValido(String chave) {
+        ResultadoCache encontrado = cache.get(chave);
+        if (encontrado != null && Instant.now().isBefore(encontrado.expiraEm())) {
+            return encontrado;
+        }
+        return null;
+    }
+
+    private void armazenar(String chave, Imagem imagem) {
+        cache.put(chave, new ResultadoCache(imagem, Instant.now().plus(
+                imagem == null ? CACHE_SEM_FOTO : CACHE_COM_FOTO)));
+    }
 
     private static void aplicarImagem(LocalResponse local, Imagem imagem) {
         local.setImagemUrl(imagem.url());
@@ -217,12 +222,17 @@ public class ExploraImagemService {
     // Se não houver coordenadas na foto, exige nome completo + cidade no título.
     private Imagem buscarFotoPorNome(LocalResponse local) {
         List<String> palavrasLocal = palavrasRelevantes(local.getNome());
-        List<String> palavrasCidade = palavrasRelevantes(local.getCidade());
-        if (palavrasLocal.size() < 3 || palavrasCidade.isEmpty()) return null;
+        if (palavrasLocal.size() < 2) return null;
 
-        String termos = String.join(" ", palavrasLocal) + " " + String.join(" ", palavrasCidade);
+        // Cidade e contexto opcional, calculado para qualquer municipio do Brasil.
+        List<String> palavrasCidade = palavrasRelevantes(texto(local.getCidade()));
+        String termos = local.getNome().trim();
+        if (!palavrasCidade.isEmpty()
+                && !palavrasLocal.containsAll(palavrasCidade)) {
+            termos += " " + local.getCidade().trim();
+        }
         String url = API + "?action=query&format=json&formatversion=2"
-                + "&generator=search&gsrnamespace=6&gsrlimit=15"
+                + "&generator=search&gsrnamespace=6&gsrlimit=20"
                 + "&gsrsearch=" + codificar(termos)
                 + "&prop=imageinfo%7Ccoordinates&iiprop=url%7Cextmetadata"
                 + "&iiurlwidth=640";
@@ -247,18 +257,20 @@ public class ExploraImagemService {
                 List<String> palavrasTitulo = palavrasRelevantes(titulo);
                 if (!palavrasTitulo.containsAll(palavrasLocal)) continue;
 
-                boolean cidadeNoTitulo = palavrasTitulo.containsAll(palavrasCidade);
+                boolean cidadeNoTitulo = !palavrasCidade.isEmpty()
+                        && palavrasTitulo.containsAll(palavrasCidade);
                 boolean coordenadaProxima = false;
                 for (Map<String, Object> ponto : listaDeMapas(pagina.get("coordinates"))) {
                     Object lat = ponto.get("lat");
                     Object lon = ponto.get("lon");
                     if (lat instanceof Number la && lon instanceof Number lo
                             && distanciaMetros(local.getLatitude(), local.getLongitude(),
-                                    la.doubleValue(), lo.doubleValue()) <= 500) {
+                                    la.doubleValue(), lo.doubleValue()) <= 300) {
                         coordenadaProxima = true;
                         break;
                     }
                 }
+                // Sem prova geografica OU cidade no titulo, nao assumir que e a atracao.
                 if (!cidadeNoTitulo && !coordenadaProxima) continue;
 
                 List<Map<String, Object>> infos = listaDeMapas(pagina.get("imageinfo"));
@@ -300,6 +312,7 @@ public class ExploraImagemService {
     }
 
     private static List<String> palavrasRelevantes(String texto) {
+        if (texto == null || texto.isBlank()) return List.of();
         String normalizado = Normalizer.normalize(texto, Normalizer.Form.NFD)
                 .replaceAll("\\p{M}+", "")
                 .toLowerCase(Locale.ROOT);
