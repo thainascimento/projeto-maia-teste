@@ -37,6 +37,14 @@ public class MaiaExploraController {
                 lat, lon, "pontos turísticos"
         );
 
+        for (LocalResponse local : encontrados) {
+            System.out.println(
+                "[EXPLORA] Nome: " + local.getNome()
+                + " | Categorias: " + local.getCategoriasGeoapify()
+                + " | Distância: " + local.getDistanciaMetros()
+            );
+        }
+
         if (encontrados == null || encontrados.isEmpty()) {
             return List.of();
         }
