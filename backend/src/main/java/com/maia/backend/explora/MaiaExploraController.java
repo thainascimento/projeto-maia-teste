@@ -1,32 +1,31 @@
-
 package com.maia.backend.explora;
 
 import com.maia.backend.geocoding.GeoapifyPlacesService;
 import com.maia.backend.local.LocalResponse;
-
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.text.Normalizer;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 @RestController
 @RequestMapping("/maia-explora")
 public class MaiaExploraController {
 
-    private final GeoapifyPlacesService geoapifyPlacesService;
-    private final ExploraImagemService exploraImagemService;
+    private static final int MAXIMO_ATRACOES = 24;
+    private static final int PONTUACAO_MINIMA = 35;
 
-    public MaiaExploraController(
-            GeoapifyPlacesService geoapifyPlacesService,
-            ExploraImagemService exploraImagemService
-    ) {
+    private final GeoapifyPlacesService geoapifyPlacesService;
+
+    public MaiaExploraController(GeoapifyPlacesService geoapifyPlacesService) {
         this.geoapifyPlacesService = geoapifyPlacesService;
-        this.exploraImagemService = exploraImagemService;
     }
 
     @GetMapping("/atracoes")
@@ -34,73 +33,205 @@ public class MaiaExploraController {
             @RequestParam double lat,
             @RequestParam double lon
     ) {
+        List<LocalResponse> encontrados = geoapifyPlacesService.buscarLocais(
+                lat, lon, "pontos turísticos"
+        );
 
-        // Busca os pontos turísticos utilizando o Geoapify.
-        List<LocalResponse> locais =
-                geoapifyPlacesService.buscarLocais(
-                        lat,
-                        lon,
-                        "pontos turísticos"
-                );
+        if (encontrados == null || encontrados.isEmpty()) {
+            return List.of();
+        }
 
-        // Remove apenas registros que possuem o mesmo ID.
-        // Locais com IDs diferentes são preservados,
-        // mesmo que tenham nomes e coordenadas semelhantes.
-        List<LocalResponse> locaisUnicos =
-                removerDuplicatasPorId(locais);
+        List<LocalResponse> candidatos = new ArrayList<>();
+        for (LocalResponse local : encontrados) {
+            if (!nomeValido(local) || !localVisitavel(local)) {
+                continue;
+            }
+            if (pontuacao(local) >= PONTUACAO_MINIMA) {
+                candidatos.add(local);
+            }
+        }
 
-        // Adiciona fotografias aos pontos turísticos.
-        // A busca de imagens funciona para destinos
-        // brasileiros e internacionais.
-        exploraImagemService.adicionarImagens(locaisUnicos);
+        candidatos.sort(
+                Comparator.comparingInt(this::pontuacao).reversed()
+                        .thenComparingDouble(this::distancia)
+        );
 
-        return locaisUnicos;
+        List<LocalResponse> unicos = removerDuplicatas(candidatos);
+        return new ArrayList<>(unicos.subList(0, Math.min(MAXIMO_ATRACOES, unicos.size())));
     }
 
-    /**
-     * Remove registros duplicados exclusivamente pelo ID.
-     *
-     * Dois locais são considerados duplicados somente
-     * quando possuem o mesmo identificador.
-     *
-     * Registros com IDs diferentes são preservados,
-     * mesmo que compartilhem nome, endereço
-     * ou coordenadas muito próximas.
-     */
-    private List<LocalResponse> removerDuplicatasPorId(
-            List<LocalResponse> locais
-    ) {
-
-        List<LocalResponse> resultado = new ArrayList<>();
-
-        if (locais == null || locais.isEmpty()) {
-            return resultado;
+    // Não transforma obras ou objetos individuais em destinos de passeio.
+    // O filtro usa as categorias efetivamente fornecidas pela Geoapify;
+    // não presume que todo lugar desconhecido seja inadequado.
+    private boolean localVisitavel(LocalResponse local) {
+        List<String> categorias = local.getCategoriasGeoapify();
+        if (categorias != null) {
+            for (String categoria : categorias) {
+                if (categoria == null) {
+                    continue;
+                }
+                String c = categoria.toLowerCase(Locale.ROOT).trim();
+                if (c.equals("tourism.attraction.artwork")
+                        || c.startsWith("tourism.attraction.artwork.")) {
+                    return false;
+                }
+            }
         }
 
-        Set<String> idsEncontrados = new HashSet<>();
+        String nome = normalizar(local.getNome());
+        return !contem(nome,
+                "placa de inauguracao",
+                "placa comemorativa",
+                "placa informativa",
+                "placa de identificacao",
+                "painel informativo"
+        );
+    }
+
+    private boolean nomeValido(LocalResponse local) {
+        if (local == null || local.getNome() == null) {
+            return false;
+        }
+
+        String nome = local.getNome().trim();
+        if (nome.length() < 4 || nome.length() > 120
+                || !nome.matches(".*[\\p{L}].*")) {
+            return false;
+        }
+
+        String normalizado = normalizar(nome);
+        Set<String> nomesGenericos = Set.of(
+                "sem nome", "unknown", "unnamed", "no name",
+                "atracao", "ponto turistico", "monumento",
+                "estatua", "escultura", "placa", "obra de arte"
+        );
+
+        return !nomesGenericos.contains(normalizado)
+                && !normalizado.startsWith("http ")
+                && !normalizado.startsWith("https ")
+                && !normalizado.startsWith("www ");
+    }
+
+    private int pontuacao(LocalResponse local) {
+        int pontos = 20;
+        List<String> categorias = local.getCategoriasGeoapify();
+
+        if (categorias != null) {
+            for (String categoria : categorias) {
+                if (categoria == null) {
+                    continue;
+                }
+                String c = categoria.toLowerCase(Locale.ROOT).trim();
+
+                if (c.startsWith("entertainment.museum")) {
+                    pontos = Math.max(pontos, 100);
+                } else if (c.startsWith("tourism.attraction.viewpoint")) {
+                    pontos = Math.max(pontos, 95);
+                } else if (c.startsWith("tourism.sights.castle")
+                        || c.startsWith("tourism.sights.fort")) {
+                    pontos = Math.max(pontos, 95);
+                } else if (c.startsWith("tourism.sights.lighthouse")
+                        || c.startsWith("tourism.sights.ruines")
+                        || c.startsWith("tourism.sights.archaeological_site")) {
+                    pontos = Math.max(pontos, 85);
+                } else if (c.startsWith("tourism.sights.place_of_worship")) {
+                    pontos = Math.max(pontos, 70);
+                } else if (c.equals("beach") || c.startsWith("natural.beach")) {
+                    pontos = Math.max(pontos, 90);
+                } else if (c.startsWith("leisure.park")
+                        || c.startsWith("leisure.garden")) {
+                    pontos = Math.max(pontos, 85);
+                } else if (c.startsWith("tourism.sights.memorial")) {
+                    pontos = Math.max(pontos, 35);
+                } else if (c.equals("tourism.attraction")
+                        || c.equals("tourism.sights")) {
+                    pontos = Math.max(pontos, 40);
+                }
+            }
+        }
+
+        String nome = normalizar(local.getNome());
+        if (contem(nome, "museu", "museum", "pinacoteca", "centro cultural", "teatro")) {
+            pontos = Math.max(pontos, 85);
+        }
+        if (contem(nome, "parque", "jardim botanico", "reserva natural", "trilha")) {
+            pontos = Math.max(pontos, 85);
+        }
+        if (contem(nome, "praia", "piscinas naturais", "mirante", "cachoeira")) {
+            pontos = Math.max(pontos, 90);
+        }
+        if (contem(nome, "catedral", "mosteiro", "santuario", "igreja historica")) {
+            pontos = Math.max(pontos, 75);
+        }
+        return pontos;
+    }
+
+    private boolean contem(String texto, String... termos) {
+        for (String termo : termos) {
+            if (texto.contains(termo)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<LocalResponse> removerDuplicatas(List<LocalResponse> locais) {
+        List<LocalResponse> resultado = new ArrayList<>();
+        Set<String> ids = new HashSet<>();
 
         for (LocalResponse local : locais) {
-
-            if (local == null) {
-                continue;
-            }
-
             String id = local.getId();
-
-            // Se o ID estiver ausente, preserva o local,
-            // pois não é possível confirmar duplicidade.
-            if (id == null || id.isBlank()) {
-                resultado.add(local);
+            if (id != null && !id.isBlank() && ids.contains(id)) {
                 continue;
             }
 
-            // O método add() retorna false quando
-            // o ID já existe no conjunto.
-            if (idsEncontrados.add(id)) {
+            boolean duplicado = false;
+            for (LocalResponse existente : resultado) {
+                if (normalizar(local.getNome()).equals(normalizar(existente.getNome()))
+                        && distanciaEntre(
+                                local.getLatitude(), local.getLongitude(),
+                                existente.getLatitude(), existente.getLongitude()
+                        ) <= 100) {
+                    duplicado = true;
+                    break;
+                }
+            }
+
+            if (!duplicado) {
                 resultado.add(local);
+                if (id != null && !id.isBlank()) {
+                    ids.add(id);
+                }
             }
         }
-
         return resultado;
+    }
+
+    private double distancia(LocalResponse local) {
+        Double metros = local.getDistanciaMetros();
+        return metros != null && Double.isFinite(metros) && metros >= 0
+                ? metros : Double.MAX_VALUE;
+    }
+
+    private double distanciaEntre(double lat1, double lon1, double lat2, double lon2) {
+        final double raioTerra = 6371008.8;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.pow(Math.sin(dLat / 2), 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.pow(Math.sin(dLon / 2), 2);
+        return 2 * raioTerra * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0, 1 - a)));
+    }
+
+    private String normalizar(String valor) {
+        if (valor == null) {
+            return "";
+        }
+        return Normalizer.normalize(valor, Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}]+", " ")
+                .trim()
+                .replaceAll("\\s+", " ");
     }
 }
