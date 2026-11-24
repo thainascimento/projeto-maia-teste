@@ -901,6 +901,7 @@ export default function PlanejamentoScreen() {
           </Text>
         </Pressable>
 
+
         <Pressable
           style={
             styles.myTripsCard

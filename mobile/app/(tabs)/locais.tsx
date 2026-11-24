@@ -444,6 +444,24 @@ export default function LocaisScreen() {
         </Text>
       </View>
 
+      {/* MAIA EXPLORA */}
+      <Pressable
+        style={({ pressed }) => [
+          styles.exploraCard,
+          pressed && styles.exploraCardPressed,
+        ]}
+        onPress={() => router.push('/explora')}
+        accessibilityRole="button"
+      >
+        <View style={styles.exploraContent}>
+          <Text style={styles.exploraTitle}>MAIA EXPLORA</Text>
+          <Text style={styles.exploraDescription}>
+            Descubra lugares, escolha seus favoritos
+            e monte seu roteiro de viagem.
+          </Text>
+        </View>
+        <Text style={styles.exploraArrow}>›</Text>
+      </Pressable>
       {visitaAtiva && (
         <Pressable
           style={({ pressed }) => [
@@ -773,6 +791,37 @@ export default function LocaisScreen() {
 }
 
 const styles = StyleSheet.create({
+  exploraCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#6d28d9',
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 16,
+  },
+  exploraCardPressed: {
+    opacity: 0.8,
+  },
+  exploraContent: {
+    flex: 1,
+  },
+  exploraTitle: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  exploraDescription: {
+    color: '#f3e8ff',
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  exploraArrow: {
+    color: '#ffffff',
+    fontSize: 30,
+    marginLeft: 12,
+  },
+
   container: {
     flex: 1,
     backgroundColor: '#f7f7fb',
